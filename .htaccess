@@ -1,0 +1,5 @@
+Options -Indexes
+DirectoryIndex index.php index.html
+<Files ".env">
+  Require all denied
+</Files>
