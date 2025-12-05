@@ -1,5 +1,5 @@
 <?php
-// Attendance API with auth, roles, and admin endpoints
+// Attendance API with auth, roles, validations, and admin tools
 
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
@@ -107,13 +107,73 @@ function verifyPassword($plain, $stored, &$needsRehash)
         return false;
     }
 
-    // Legacy/plain fallback: accept and mark for rehash
     if (hash_equals($stored, $plain) || hash_equals($stored, hash('sha256', $plain))) {
         $needsRehash = true;
         return true;
     }
 
     return false;
+}
+
+function getTodayStats(PDO $pdo, $empleadoId)
+{
+    $today = date('Y-m-d');
+
+    $stmt = $pdo->prepare(
+        'SELECT tipo, fecha_hora FROM fichajes WHERE empleado_id = :id AND DATE(fecha_hora) = :today ORDER BY fecha_hora DESC, id DESC'
+    );
+    $stmt->execute([':id' => $empleadoId, ':today' => $today]);
+    $rows = $stmt->fetchAll();
+
+    $last = count($rows) ? $rows[0] : null;
+    $count = count($rows);
+
+    return [$count, $last];
+}
+
+function validatePunch(PDO $pdo, $empleadoId, $tipo)
+{
+    global $validTypes;
+    if (!in_array($tipo, $validTypes, true)) {
+        return 'Tipo de fichaje invalido.';
+    }
+
+    [$count, $last] = getTodayStats($pdo, $empleadoId);
+
+    if ($count >= 4) {
+        return 'Límite de fichajes del día alcanzado (4).';
+    }
+
+    if ($last) {
+        $lastTs = strtotime($last['fecha_hora']);
+        if (time() - $lastTs < 120) {
+            return 'Debes esperar 2 minutos entre fichajes.';
+        }
+    }
+
+    $lastType = $last ? $last['tipo'] : null;
+
+    if ($count === 0 && $tipo !== 'Entrada') {
+        return 'Debes marcar Entrada para iniciar el turno.';
+    }
+
+    if ($lastType === 'Entrada' && !in_array($tipo, ['Salida Descanso', 'Salida'], true)) {
+        return 'Después de Entrada solo puedes marcar Salida Descanso o Salida.';
+    }
+
+    if ($lastType === 'Salida Descanso' && $tipo !== 'Vuelta Descanso') {
+        return 'Debes marcar Vuelta Descanso después de Salida Descanso.';
+    }
+
+    if ($lastType === 'Vuelta Descanso' && $tipo !== 'Salida') {
+        return 'Después de Vuelta Descanso solo puedes marcar Salida.';
+    }
+
+    if ($lastType === 'Salida') {
+        return 'El turno ya fue cerrado con Salida. Inicia uno nuevo mañana.';
+    }
+
+    return null;
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -172,7 +232,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'create_employee') {
-        $admin = requireLogin('admin');
+        requireLogin('admin');
 
         $nombre = isset($input['nombre']) ? trim($input['nombre']) : '';
         $cedula = isset($input['cedula']) ? trim($input['cedula']) : '';
@@ -211,14 +271,77 @@ if ($method === 'POST') {
         ], 201);
     }
 
-    // Default POST: punch/attendance for current user
+    if ($action === 'admin_punch') {
+        requireLogin('admin');
+
+        $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
+        $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+        $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : date('Y-m-d H:i:s');
+
+        if (!$empleadoId || !in_array($tipo, $validTypes, true)) {
+            respond(['success' => false, 'error' => 'Empleado y tipo son requeridos'], 400);
+        }
+
+        $pdo->prepare('INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)')->execute([
+            ':empleado_id' => $empleadoId,
+            ':tipo' => $tipo,
+            ':fecha_hora' => $fechaHora,
+        ]);
+
+        respond(['success' => true, 'id' => (int)$pdo->lastInsertId()]);
+    }
+
+    if ($action === 'edit_punch') {
+        requireLogin('admin');
+        $id = isset($input['id']) ? (int)$input['id'] : 0;
+        $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+        $fechaHora = isset($input['fecha_hora']) ? trim($input['fecha_hora']) : '';
+
+        if (!$id || (!$tipo && !$fechaHora)) {
+            respond(['success' => false, 'error' => 'Datos insuficientes'], 400);
+        }
+        if ($tipo && !in_array($tipo, $validTypes, true)) {
+            respond(['success' => false, 'error' => 'Tipo invalido'], 400);
+        }
+
+        $fields = [];
+        $params = [':id' => $id];
+        if ($tipo) {
+            $fields[] = 'tipo = :tipo';
+            $params[':tipo'] = $tipo;
+        }
+        if ($fechaHora) {
+            $fields[] = 'fecha_hora = :fecha_hora';
+            $params[':fecha_hora'] = $fechaHora;
+        }
+
+        $sql = 'UPDATE fichajes SET ' . implode(', ', $fields) . ' WHERE id = :id';
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        respond(['success' => true]);
+    }
+
+    if ($action === 'delete_punch') {
+        requireLogin('admin');
+        $id = isset($input['id']) ? (int)$input['id'] : 0;
+        if (!$id) {
+            respond(['success' => false, 'error' => 'ID requerido'], 400);
+        }
+        $stmt = $pdo->prepare('DELETE FROM fichajes WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        respond(['success' => true]);
+    }
+
+    // Default POST: employee/self punch with validation
     $user = requireLogin();
 
     $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
     $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : null;
 
-    if ($tipo === '' || !in_array($tipo, $validTypes, true)) {
-        respond(['success' => false, 'error' => 'Tipo de fichaje invalido'], 400);
+    $error = validatePunch($pdo, $user['id'], $tipo);
+    if ($error) {
+        respond(['success' => false, 'error' => $error], 400);
     }
 
     try {
@@ -265,7 +388,7 @@ if ($method === 'GET') {
              FROM fichajes f
              JOIN empleados e ON e.id = f.empleado_id
              ORDER BY f.fecha_hora DESC, f.id DESC
-             LIMIT 10'
+             LIMIT 20'
         )->fetchAll();
 
         $empleados = $pdo->query('SELECT id, nombre, cedula, rol FROM empleados ORDER BY nombre ASC')->fetchAll();
