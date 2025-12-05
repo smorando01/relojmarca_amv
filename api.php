@@ -11,10 +11,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-$dbHost = 'localhost';
-$dbName = 'relojmarca';
-$dbUser = 'root';
-$dbPass = '';
+function loadEnv($path)
+{
+    if (!is_readable($path)) {
+        return [];
+    }
+
+    $vars = [];
+    $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || $line[0] === ';') {
+            continue;
+        }
+        if (strpos($line, '=') === false) {
+            continue;
+        }
+
+        [$key, $value] = explode('=', $line, 2);
+        $key = trim($key);
+        $value = trim($value);
+        if ($value !== '' && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) {
+            $value = substr($value, 1, -1);
+        }
+
+        $vars[$key] = $value;
+        putenv($key . '=' . $value);
+    }
+
+    return $vars;
+}
+
+loadEnv(__DIR__ . '/.env');
+
+$dbHost = getenv('DB_HOST') ?: 'localhost';
+$dbName = getenv('DB_NAME') ?: 'amvstore_cloudamv';
+$dbUser = getenv('DB_USER') ?: 'amvstore_cloudamv';
+$dbPass = getenv('DB_PASS') ?: 'u!d=wa@487is3IlY';
 
 $validTypes = ['Entrada', 'Salida Descanso', 'Vuelta Descanso', 'Salida'];
 
