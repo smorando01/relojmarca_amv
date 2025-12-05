@@ -1,13 +1,20 @@
--- Database schema for attendance control MVP
--- Creates tables and seeds two sample employees
+-- Database schema for attendance control with auth and roles
+-- Run on a clean database. Drops existing tables to avoid column mismatches.
 
-CREATE TABLE IF NOT EXISTS empleados (
+DROP TABLE IF EXISTS fichajes;
+DROP TABLE IF EXISTS empleados;
+
+CREATE TABLE empleados (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL,
-  turno_id INT NOT NULL DEFAULT 1
+  nombre VARCHAR(150) NOT NULL,
+  cedula VARCHAR(150) NOT NULL,
+  password VARCHAR(255) NOT NULL,
+  rol ENUM('admin', 'empleado') NOT NULL DEFAULT 'empleado',
+  turno_id INT NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_cedula (cedula)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS fichajes (
+CREATE TABLE fichajes (
   id INT AUTO_INCREMENT PRIMARY KEY,
   empleado_id INT NOT NULL,
   tipo ENUM('Entrada', 'Salida Descanso', 'Vuelta Descanso', 'Salida') NOT NULL,
@@ -16,6 +23,9 @@ CREATE TABLE IF NOT EXISTS fichajes (
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO empleados (nombre, turno_id) VALUES
-  ('Ana Torres', 1),
-  ('Luis Perez', 2);
+-- Seed admin user and sample employees
+-- Las contraseñas pueden ser texto plano; el API rehashea al primer login.
+INSERT INTO empleados (nombre, cedula, password, rol, turno_id) VALUES
+  ('Usuario Maestro', 'administracion@amvstore.com.uy', 'AmVadmin123', 'admin', 1),
+  ('Ana Torres', 'ana.torres', '1234.', 'empleado', 1),
+  ('Luis Perez', 'luis.perez', '1234.', 'empleado', 2);
