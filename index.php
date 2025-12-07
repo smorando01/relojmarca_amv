@@ -41,6 +41,7 @@
 
       // Usamos ruta relativa para funcionar en subdirectorios (ej: /cloudamv/)
       const MODELS_URL = "models";
+      const KIOSK_TOKEN = window.KIOSK_TOKEN || "changeme";
       let faceModelsPromise = null;
       async function ensureFaceModelsLoaded() {
         if (typeof faceapi === "undefined") {
@@ -56,9 +57,9 @@
         return faceModelsPromise;
       }
 
-      async function apiFetch(method, action, body) {
+      async function apiFetch(method, action, body, extraHeaders = {}) {
         const url = action ? `${API}?action=${encodeURIComponent(action)}` : API;
-        const options = { method, headers: { "Content-Type": "application/json" } };
+        const options = { method, headers: { "Content-Type": "application/json", ...extraHeaders } };
         if (body) options.body = JSON.stringify(body);
         const res = await fetch(url, options);
         return res.json();
@@ -314,7 +315,14 @@
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
-                  <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    className="h-full w-full object-cover"
+                    style={{ transform: "scaleX(-1)" }}
+                  />
                 </div>
                 <div className="space-y-3 text-sm">
                   <p className="font-semibold text-brand-dark">Estado: {status}</p>
@@ -789,7 +797,7 @@
         }
 
         async function loadEmployees() {
-          const res = await apiFetch("GET", "get_kiosk_data");
+          const res = await apiFetch("GET", "get_kiosk_data", null, { "X-Kiosk-Token": KIOSK_TOKEN });
           if (!res || !res.success) {
             const errMsg = res && res.error ? res.error : "No se pudieron obtener descriptores";
             throw new Error(errMsg);
@@ -813,7 +821,10 @@
           if (!ready || busy || !videoRef.current || !matcherRef.current) return;
           try {
             const detection = await faceapi
-              .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options())
+              .detectSingleFace(
+                videoRef.current,
+                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
+              )
               .withFaceLandmarks()
               .withFaceDescriptor();
 
@@ -849,10 +860,16 @@
           if (!match || busy) return;
           setBusy(true);
           setStatus("Registrando fichaje...");
-          const res = await apiFetch("POST", "kiosk_punch", {
-            empleado_id: match.employee.id,
-            tipo,
-          });
+          const res = await apiFetch(
+            "POST",
+            "kiosk_punch",
+            {
+              empleado_id: match.employee.id,
+              tipo,
+              token: KIOSK_TOKEN,
+            },
+            { "X-Kiosk-Token": KIOSK_TOKEN }
+          );
           if (res && res.success) {
             setLastAction(`${match.employee.nombre} → ${tipo}`);
             setStatus("Fichaje registrado");
@@ -869,7 +886,14 @@
 
         return (
           <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-            <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover opacity-40" autoPlay muted playsInline />
+            <video
+              ref={videoRef}
+              className="absolute inset-0 h-full w-full object-cover opacity-40"
+              autoPlay
+              muted
+              playsInline
+              style={{ transform: "scaleX(-1)" }}
+            />
             <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
               <header className="flex items-center justify-between">
                 <div>

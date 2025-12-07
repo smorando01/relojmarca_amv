@@ -10,6 +10,7 @@ const ACTIONS = [
 
 // Usamos ruta relativa para respetar instalaciones en subdirectorios (ej: /cloudamv/)
 const MODELS_URL = "models";
+const KIOSK_TOKEN = typeof window !== "undefined" && window.KIOSK_TOKEN ? window.KIOSK_TOKEN : "changeme";
 let faceModelsPromise = null;
 async function ensureFaceModelsLoaded() {
   if (typeof faceapi === "undefined") {
@@ -25,9 +26,9 @@ async function ensureFaceModelsLoaded() {
   return faceModelsPromise;
 }
 
-async function apiFetch(method, action, body) {
+async function apiFetch(method, action, body, extraHeaders = {}) {
   const url = action ? `${API}?action=${encodeURIComponent(action)}` : API;
-  const options = { method, headers: { "Content-Type": "application/json" } };
+  const options = { method, headers: { "Content-Type": "application/json", ...extraHeaders } };
   if (body) options.body = JSON.stringify(body);
   const res = await fetch(url, options);
   return res.json();
@@ -283,7 +284,14 @@ function FaceCaptureModal({ employee, onClose, onSaved }) {
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
-            <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="h-full w-full object-cover"
+              style={{ transform: "scaleX(-1)" }}
+            />
           </div>
           <div className="space-y-3 text-sm">
             <p className="font-semibold text-brand-dark">Estado: {status}</p>
@@ -758,7 +766,7 @@ function KioskFaceApp() {
   }
 
   async function loadEmployees() {
-    const res = await apiFetch("GET", "get_kiosk_data");
+    const res = await apiFetch("GET", "get_kiosk_data", null, { "X-Kiosk-Token": KIOSK_TOKEN });
     if (!res || !res.success) {
       const errMsg = res && res.error ? res.error : "No se pudieron obtener descriptores";
       throw new Error(errMsg);
@@ -818,10 +826,16 @@ function KioskFaceApp() {
     if (!match || busy) return;
     setBusy(true);
     setStatus("Registrando fichaje...");
-    const res = await apiFetch("POST", "kiosk_punch", {
-      empleado_id: match.employee.id,
-      tipo,
-    });
+    const res = await apiFetch(
+      "POST",
+      "kiosk_punch",
+      {
+        empleado_id: match.employee.id,
+        tipo,
+        token: KIOSK_TOKEN,
+      },
+      { "X-Kiosk-Token": KIOSK_TOKEN }
+    );
     if (res && res.success) {
       setLastAction(`${match.employee.nombre} → ${tipo}`);
       setStatus("Fichaje registrado");
@@ -838,7 +852,14 @@ function KioskFaceApp() {
 
   return (
     <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-      <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover opacity-40" autoPlay muted playsInline />
+      <video
+        ref={videoRef}
+        className="absolute inset-0 h-full w-full object-cover opacity-40"
+        autoPlay
+        muted
+        playsInline
+        style={{ transform: "scaleX(-1)" }}
+      />
       <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
         <header className="flex items-center justify-between">
           <div>

@@ -43,6 +43,7 @@ $dbHost = getenv('DB_HOST') ?: 'localhost';
 $dbName = getenv('DB_NAME') ?: 'amvstore_cloudamv';
 $dbUser = getenv('DB_USER') ?: 'amvstore_cloudamv';
 $dbPass = getenv('DB_PASS') ?: 'u!d=wa@487is3IlY';
+$kioskToken = getenv('KIOSK_TOKEN') ?: 'changeme';
 
 $validTypes = ['Entrada', 'Salida Descanso', 'Vuelta Descanso', 'Salida'];
 
@@ -248,6 +249,17 @@ if ($method === 'POST') {
 
         case 'kiosk_punch':
             // Fichaje simplificado para kiosco por reconocimiento facial
+            $providedToken = '';
+            if (!empty($_SERVER['HTTP_X_KIOSK_TOKEN'])) {
+                $providedToken = $_SERVER['HTTP_X_KIOSK_TOKEN'];
+            } elseif (!empty($input['token'])) {
+                $providedToken = $input['token'];
+            }
+
+            if (!validateKioskToken($providedToken, $kioskToken)) {
+                respond(['success' => false, 'error' => 'Token kiosco inválido'], 401);
+            }
+
             $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
             $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
 
@@ -360,6 +372,16 @@ if ($method === 'GET') {
 
         case 'get_kiosk_data':
             // Datos de empleados con descriptor facial para kiosco
+            $providedToken = '';
+            if (!empty($_SERVER['HTTP_X_KIOSK_TOKEN'])) {
+                $providedToken = $_SERVER['HTTP_X_KIOSK_TOKEN'];
+            } elseif (!empty($_GET['token'])) {
+                $providedToken = $_GET['token'];
+            }
+            if (!validateKioskToken($providedToken, $kioskToken)) {
+                respond(['success' => false, 'error' => 'Token kiosco inválido'], 401);
+            }
+
             $rows = $pdo->query('SELECT id, nombre, cedula, rol, face_descriptor FROM empleados WHERE face_descriptor IS NOT NULL')->fetchAll();
             $empleados = [];
             foreach ($rows as $row) {
@@ -556,6 +578,14 @@ function validatePunch(PDO $pdo, $empleadoId, $tipo)
     }
 
     return null;
+}
+
+function validateKioskToken($provided, $expected)
+{
+    if ($expected === '') {
+        return true;
+    }
+    return hash_equals((string)$expected, (string)$provided);
 }
 
 function parseDescriptor($input)
