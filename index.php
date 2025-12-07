@@ -39,7 +39,8 @@
         { key: "Salida", tone: "from-brand-primary-dark to-brand-dark" },
       ];
 
-      const MODELS_URL = "/models";
+      // Usamos ruta relativa para funcionar en subdirectorios (ej: /cloudamv/)
+      const MODELS_URL = "models";
       let faceModelsPromise = null;
       async function ensureFaceModelsLoaded() {
         if (typeof faceapi === "undefined") {

@@ -8,7 +8,8 @@ const ACTIONS = [
   { key: "Salida", tone: "from-brand-primary-dark to-brand-dark" },
 ];
 
-const MODELS_URL = "/models";
+// Usamos ruta relativa para respetar instalaciones en subdirectorios (ej: /cloudamv/)
+const MODELS_URL = "models";
 let faceModelsPromise = null;
 async function ensureFaceModelsLoaded() {
   if (typeof faceapi === "undefined") {
