@@ -370,7 +370,7 @@
 
         const employeeOptions = useMemo(() => {
           if (!stats || !stats.empleados) return [];
-          return stats.empleados;
+          return stats.empleados.map((emp) => ({ ...emp, id: Number(emp.id) }));
         }, [stats]);
 
         const selectedEmployee = useMemo(
