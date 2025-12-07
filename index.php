@@ -49,6 +49,9 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
       // Token de kiosco inyectado desde .env (servidor)
       window.KIOSK_TOKEN = "<?php echo htmlspecialchars($kioskToken, ENT_QUOTES, 'UTF-8'); ?>";
     </script>
+    <style>
+      video { transform: scaleX(-1); }
+    </style>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
@@ -68,9 +71,8 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         { key: "Salida", tone: "from-brand-primary-dark to-brand-dark" },
       ];
 
-      // Usamos ruta relativa para funcionar en subdirectorios (ej: /cloudamv/)
       const MODELS_URL = "models";
-      const KIOSK_TOKEN = window.KIOSK_TOKEN || "changeme";
+      const KIOSK_TOKEN = window.KIOSK_TOKEN || "";
       let faceModelsPromise = null;
       async function ensureFaceModelsLoaded() {
         if (typeof faceapi === "undefined") {
@@ -261,14 +263,25 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         );
       }
 
-      function FaceCaptureModal({ employee, onClose, onSaved }) {
+      // --- COMPONENTE: MODO KIOSCO CON DEBUG VISUAL ---
+      function KioskFaceApp() {
         const videoRef = useRef(null);
-        const loopRef = useRef(null);
+        const canvasRef = useRef(null);
         const streamRef = useRef(null);
-        const [status, setStatus] = useState("Preparando cámara...");
-        const [descriptor, setDescriptor] = useState(null);
-        const [saving, setSaving] = useState(false);
+        const matcherRef = useRef(null);
+        const employeeMapRef = useRef({});
+        const intervalRef = useRef(null);
+
+        const [status, setStatus] = useState("Cargando cerebro IA...");
         const [error, setError] = useState("");
+        const [match, setMatch] = useState(null);
+        const [busy, setBusy] = useState(false);
+        const [lastAction, setLastAction] = useState("");
+        const [ready, setReady] = useState(false);
+        const [modelsReady, setModelsReady] = useState(false);
+        const [employeesReady, setEmployeesReady] = useState(false);
+        const [cameraReady, setCameraReady] = useState(false);
+        const [lastDistance, setLastDistance] = useState(null);
 
         useEffect(() => {
           let canceled = false;
@@ -276,107 +289,225 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             try {
               setStatus("Cargando modelos...");
               await ensureFaceModelsLoaded();
-              setStatus("Solicitando cámara...");
-              const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+              setModelsReady(true);
               if (canceled) return;
-              streamRef.current = stream;
-              if (videoRef.current) {
-                videoRef.current.srcObject = stream;
-                await videoRef.current.play();
-              }
-              setStatus("Detectando rostro...");
-              loopRef.current = setInterval(detectFace, 800);
+
+              setStatus("Descargando rostros...");
+              await loadEmployees();
+              if (canceled) return;
+
+              await startCamera();
+              setStatus("Buscando rostros...");
             } catch (e) {
-              setError("No se pudo iniciar cámara o modelos");
+              setError("No se pudo iniciar el modo kiosco: " + e.message);
             }
           }
           start();
           return () => {
-            if (loopRef.current) clearInterval(loopRef.current);
+            if (intervalRef.current) clearInterval(intervalRef.current);
             if (streamRef.current) {
               streamRef.current.getTracks().forEach((t) => t.stop());
             }
           };
         }, []);
 
-        async function detectFace() {
-          if (!videoRef.current || typeof faceapi === "undefined") return;
+        async function startCamera() {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user" },
+            audio: false,
+          });
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            await videoRef.current.play();
+          }
+          setCameraReady(true);
+        }
+
+        async function loadEmployees() {
+          const res = await apiFetch("GET", "get_kiosk_data", null, { "X-Kiosk-Token": KIOSK_TOKEN });
+          if (!res || !res.success) {
+            const errMsg = res && res.error ? res.error : "No se pudieron obtener descriptores";
+            throw new Error(errMsg);
+          }
+          const labeled = [];
+          const map = {};
+          (res.empleados || []).forEach((emp) => {
+            if (!emp.face_descriptor) return;
+            const descriptor = new Float32Array(
+              Array.isArray(emp.face_descriptor) ? emp.face_descriptor : Object.values(emp.face_descriptor)
+            );
+            labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptor]));
+            map[String(emp.id)] = emp;
+          });
+          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
+          employeeMapRef.current = map;
+          setEmployeesReady(true);
+        }
+
+        async function runDetection() {
+          if (!ready || busy) return;
+          const videoEl = videoRef.current;
+          const canvas = canvasRef.current;
+          if (!videoEl || videoEl.readyState !== 4) return;
+
           try {
             const detection = await faceapi
               .detectSingleFace(
-                videoRef.current,
+                videoEl,
                 new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
               )
               .withFaceLandmarks()
               .withFaceDescriptor();
-            if (detection) {
-              setDescriptor(Array.from(detection.descriptor));
-              setStatus("Rostro detectado. Guarda para registrar.");
-            } else {
-              setStatus("Acerca tu rostro a la cámara...");
+
+            if (canvas && videoEl.videoWidth && videoEl.videoHeight) {
+              canvas.width = videoEl.videoWidth;
+              canvas.height = videoEl.videoHeight;
+              const ctx = canvas.getContext("2d");
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              if (detection) {
+                const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
+                const resized = faceapi.resizeResults(detection, displaySize);
+                faceapi.draw.drawDetections(canvas, resized);
+              }
             }
+
+            if (!detection) {
+              setStatus("Acércate a la cámara");
+              setMatch(null);
+              setLastDistance(null);
+              return;
+            }
+
+            if (!matcherRef.current) {
+              setStatus("Rostro detectado (sin registros)");
+              setMatch(null);
+              setLastDistance(null);
+              return;
+            }
+
+            const best = matcherRef.current.findBestMatch(detection.descriptor);
+            const distance = best && best.distance !== undefined ? best.distance : null;
+            setLastDistance(distance);
+            const THRESHOLD = 0.6;
+            if (!best || best.label === "unknown" || (distance !== null && distance > THRESHOLD)) {
+              const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
+              setStatus(diffText);
+              setMatch(null);
+              return;
+            }
+
+            const employee = employeeMapRef.current[best.label];
+            if (!employee) {
+              const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
+              setStatus(diffText);
+              setMatch(null);
+              return;
+            }
+
+            setStatus(`Hola, ${employee.nombre}`);
+            setMatch({ employee, distance });
           } catch (e) {
-            setError("Error detectando rostro");
+            setError("Error procesando rostro");
           }
         }
 
-        async function handleSave() {
-          if (!descriptor) return;
-          setSaving(true);
-          const res = await apiFetch("POST", "save_face", { empleado_id: employee.id, descriptor });
-          if (res && res.success) {
-            onSaved();
-          } else {
-            setError(res.error || "No se pudo guardar");
+        useEffect(() => {
+          if (modelsReady && employeesReady && cameraReady && !ready) {
+            setReady(true);
+            intervalRef.current = setInterval(runDetection, 500);
           }
-          setSaving(false);
+          if (modelsReady && employeesReady && !matcherRef.current) {
+            setStatus("Rostro detectado (sin registros)");
+          }
+        }, [modelsReady, employeesReady, cameraReady, ready]);
+
+        async function handlePunch(tipo) {
+          if (!match || busy) return;
+          setBusy(true);
+          setStatus("Registrando fichaje...");
+          const res = await apiFetch(
+            "POST",
+            "kiosk_punch",
+            {
+              empleado_id: match.employee.id,
+              tipo,
+              token: KIOSK_TOKEN,
+            },
+            { "X-Kiosk-Token": KIOSK_TOKEN }
+          );
+          if (res && res.success) {
+            setLastAction(`${match.employee.nombre} → ${tipo}`);
+            setStatus("Fichaje registrado");
+            setTimeout(() => {
+              setBusy(false);
+              setMatch(null);
+              setStatus("Buscando rostros...");
+            }, 3000);
+          } else {
+            setStatus(res.error || "No se pudo fichar");
+            setBusy(false);
+          }
         }
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-            <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl">
-              <div className="flex items-start justify-between mb-4">
+          <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+            <div className="absolute inset-0">
+              <video
+                ref={videoRef}
+                className="h-full w-full object-cover opacity-40"
+                autoPlay
+                muted
+                playsInline
+                style={{ transform: "scaleX(-1)" }}
+              />
+              <canvas ref={canvasRef} className="absolute inset-0 h-full w-full pointer-events-none" />
+            </div>
+            <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
+              <header className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-xl font-semibold">Registrar rostro para {employee.nombre}</h3>
-                  <p className="text-sm text-slate-600">Usa la cámara frontal y espera la detección.</p>
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-300">CloudAMV / Modo Kiosco</p>
+                  <h1 className="text-3xl font-bold">Fichaje con rostro</h1>
+                  <p className="text-sm text-slate-200">Acércate a la cámara para identificarte.</p>
                 </div>
-                <button onClick={onClose} className="text-slate-500 hover:text-slate-800">✕</button>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    muted
-                    playsInline
-                    className="h-full w-full object-cover"
-                    style={{ transform: "scaleX(-1)" }}
-                  />
+                <div className="text-right text-sm text-slate-300">
+                  <p>{status}</p>
+                  {lastDistance !== null && <p className="text-xs text-slate-400">Última diff: {lastDistance.toFixed(3)}</p>}
+                  {lastAction && <p className="text-emerald-300 font-semibold">Último: {lastAction}</p>}
                 </div>
-                <div className="space-y-3 text-sm">
-                  <p className="font-semibold text-brand-dark">Estado: {status}</p>
-                  {descriptor && (
-                    <p className="rounded-lg bg-green-50 px-3 py-2 text-green-800">Rostro listo para guardar.</p>
-                  )}
-                  {error && <p className="rounded-lg bg-brand-alert/10 px-3 py-2 text-brand-alert">{error}</p>}
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setDescriptor(null)}
-                      className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300"
-                    >
-                      Reintentar
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!descriptor || saving}
-                      onClick={handleSave}
-                      className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white shadow hover:bg-brand-primary-dark disabled:opacity-60"
-                    >
-                      {saving ? "Guardando..." : "Guardar rostro"}
-                    </button>
+              </header>
+
+              {error && <div className="rounded-xl bg-brand-alert/20 px-4 py-3 text-brand-alert">{error}</div>}
+
+              <div className="flex flex-1 flex-col items-center justify-center gap-6">
+                {match ? (
+                  <div className="w-full max-w-3xl rounded-2xl border border-white/20 bg-white/10 p-6 shadow-2xl backdrop-blur">
+                    <p className="text-sm uppercase tracking-[0.2em] text-slate-200">Rostro reconocido</p>
+                    <h2 className="text-3xl font-bold text-white">Hola, {match.employee.nombre}</h2>
+                    <p className="text-sm text-slate-200">Selecciona tu acción</p>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      {ACTIONS.map((action) => (
+                        <button
+                          key={action.key}
+                          onClick={() => handlePunch(action.key)}
+                          disabled={busy}
+                          className="rounded-2xl bg-white/20 px-4 py-6 text-left text-white shadow-lg transition hover:bg-white/30 disabled:opacity-60"
+                        >
+                          <p className="text-xs uppercase tracking-[0.15em] text-slate-200">Acción</p>
+                          <p className="text-xl font-semibold">{action.key}</p>
+                          <p className="text-xs text-slate-200">{busy ? "Enviando..." : "Pulsar para fichar"}</p>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center shadow-2xl backdrop-blur">
+                    <div className="w-24 h-24 border-4 border-brand-primary rounded-full mx-auto animate-ping mb-4"></div>
+                    <p className="text-xl font-semibold text-white">Buscando rostros...</p>
+                    <p className="text-sm text-slate-200">Alinea tu cara en la cámara. Distancia segura.</p>
+                    <p className="text-xs text-slate-300 mt-2">{status}</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -768,251 +899,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
                 }}
               />
             )}
-          </div>
-        );
-      }
-
-      function KioskFaceApp() {
-        const videoRef = useRef(null);
-        const streamRef = useRef(null);
-        const matcherRef = useRef(null);
-        const employeeMapRef = useRef({});
-        const intervalRef = useRef(null);
-        const canvasRef = useRef(null);
-
-        const [status, setStatus] = useState("Cargando cerebro IA...");
-        const [error, setError] = useState("");
-        const [match, setMatch] = useState(null);
-        const [busy, setBusy] = useState(false);
-        const [lastAction, setLastAction] = useState("");
-        const [ready, setReady] = useState(false);
-        const [modelsReady, setModelsReady] = useState(false);
-        const [employeesReady, setEmployeesReady] = useState(false);
-        const [cameraReady, setCameraReady] = useState(false);
-
-        useEffect(() => {
-          let canceled = false;
-          async function start() {
-            try {
-              setStatus("Cargando modelos...");
-              await ensureFaceModelsLoaded();
-              setModelsReady(true);
-              if (canceled) return;
-
-              setStatus("Descargando rostros...");
-              await loadEmployees();
-              if (canceled) return;
-
-              await startCamera();
-              setStatus("Buscando rostros...");
-            } catch (e) {
-              setError("No se pudo iniciar el modo kiosco: " + e.message);
-            }
-          }
-          start();
-          return () => {
-            if (intervalRef.current) clearInterval(intervalRef.current);
-            if (streamRef.current) {
-              streamRef.current.getTracks().forEach((t) => t.stop());
-            }
-          };
-        }, []);
-
-        async function startCamera() {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: "user" },
-            audio: false,
-          });
-          streamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            await videoRef.current.play();
-          }
-          setCameraReady(true);
-        }
-
-        async function loadEmployees() {
-          const res = await apiFetch("GET", "get_kiosk_data", null, { "X-Kiosk-Token": KIOSK_TOKEN });
-          if (!res || !res.success) {
-            const errMsg = res && res.error ? res.error : "No se pudieron obtener descriptores";
-            throw new Error(errMsg);
-          }
-          const labeled = [];
-          const map = {};
-          (res.empleados || []).forEach((emp) => {
-            if (!emp.face_descriptor || !Array.isArray(emp.face_descriptor)) return;
-            const descriptorArray = new Float32Array(emp.face_descriptor);
-            labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptorArray]));
-            map[String(emp.id)] = emp;
-          });
-          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
-          employeeMapRef.current = map;
-          setEmployeesReady(true);
-        }
-
-        async function runDetection() {
-          if (!ready || busy) return;
-          const videoEl = videoRef.current;
-          if (!videoEl || videoEl.readyState !== 4) {
-            return;
-          }
-          try {
-            const detection = await faceapi
-              .detectSingleFace(
-                videoEl,
-                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
-              )
-              .withFaceLandmarks()
-              .withFaceDescriptor();
-
-            if (!detection) {
-              setStatus("Acércate a la cámara");
-              setMatch(null);
-              const canvas = canvasRef.current;
-              if (canvas) {
-                const ctx = canvas.getContext("2d");
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-              }
-              return;
-            }
-
-            const canvas = canvasRef.current;
-            if (canvas && videoEl.videoWidth && videoEl.videoHeight) {
-              canvas.width = videoEl.videoWidth;
-              canvas.height = videoEl.videoHeight;
-              const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
-              const resized = faceapi.resizeResults(detection, displaySize);
-              const ctx = canvas.getContext("2d");
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              faceapi.draw.drawDetections(canvas, resized);
-            }
-
-            if (!matcherRef.current) {
-              setStatus("Rostro detectado (sin registros)");
-              setMatch(null);
-              return;
-            }
-
-            const best = matcherRef.current.findBestMatch(detection.descriptor);
-            const THRESHOLD = 0.6;
-            if (!best || best.label === "unknown" || best.distance > THRESHOLD) {
-              setStatus("Rostro desconocido");
-              setMatch(null);
-              return;
-            }
-
-            const employee = employeeMapRef.current[best.label];
-            if (!employee) {
-              setStatus("Rostro desconocido");
-              setMatch(null);
-              return;
-            }
-
-            setStatus(`Hola, ${employee.nombre}`);
-            setMatch({ employee, distance: best.distance });
-          } catch (e) {
-            setError("Error procesando rostro");
-          }
-        }
-
-        useEffect(() => {
-          if (modelsReady && employeesReady && cameraReady && !ready) {
-            setReady(true);
-            // Estrategia original: detección con intervalos fijos (500ms) usando FaceMatcher preconstruido
-            intervalRef.current = setInterval(runDetection, 500);
-          }
-          if (modelsReady && employeesReady && !matcherRef.current) {
-            setStatus("Rostro detectado (sin registros)");
-          }
-        }, [modelsReady, employeesReady, cameraReady, ready]);
-
-        async function handlePunch(tipo) {
-          if (!match || busy) return;
-          setBusy(true);
-          setStatus("Registrando fichaje...");
-          const res = await apiFetch(
-            "POST",
-            "kiosk_punch",
-            {
-              empleado_id: match.employee.id,
-              tipo,
-              token: KIOSK_TOKEN,
-            },
-            { "X-Kiosk-Token": KIOSK_TOKEN }
-          );
-          if (res && res.success) {
-            setLastAction(`${match.employee.nombre} → ${tipo}`);
-            setStatus("Fichaje registrado");
-            setTimeout(() => {
-              setBusy(false);
-              setMatch(null);
-              setStatus("Buscando rostros...");
-            }, 3000);
-          } else {
-            setStatus(res.error || "No se pudo fichar");
-            setBusy(false);
-          }
-        }
-
-        return (
-          <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-            <div className="absolute inset-0">
-              <video
-                ref={videoRef}
-                className="h-full w-full object-cover opacity-40"
-                autoPlay
-                muted
-                playsInline
-                style={{ transform: "scaleX(-1)" }}
-              />
-              <canvas ref={canvasRef} className="absolute inset-0 h-full w-full pointer-events-none" />
-            </div>
-            <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
-              <header className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.25em] text-slate-300">CloudAMV / Modo Kiosco</p>
-                  <h1 className="text-3xl font-bold">Fichaje con rostro</h1>
-                  <p className="text-sm text-slate-200">Acércate a la cámara para identificarte.</p>
-                </div>
-                <div className="text-right text-sm text-slate-300">
-                  <p>{status}</p>
-                  {lastAction && <p className="text-emerald-300 font-semibold">Último: {lastAction}</p>}
-                </div>
-              </header>
-
-              {error && <div className="rounded-xl bg-brand-alert/20 px-4 py-3 text-brand-alert">{error}</div>}
-
-              <div className="flex flex-1 flex-col items-center justify-center gap-6">
-                {match ? (
-                  <div className="w-full max-w-3xl rounded-2xl border border-white/20 bg-white/10 p-6 shadow-2xl backdrop-blur">
-                    <p className="text-sm uppercase tracking-[0.2em] text-slate-200">Rostro reconocido</p>
-                    <h2 className="text-3xl font-bold text-white">Hola, {match.employee.nombre}</h2>
-                    <p className="text-sm text-slate-200">Selecciona tu acción</p>
-                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                      {ACTIONS.map((action) => (
-                        <button
-                          key={action.key}
-                          onClick={() => handlePunch(action.key)}
-                          disabled={busy}
-                          className="rounded-2xl bg-white/20 px-4 py-6 text-left text-white shadow-lg transition hover:bg-white/30 disabled:opacity-60"
-                        >
-                          <p className="text-xs uppercase tracking-[0.15em] text-slate-200">Acción</p>
-                          <p className="text-xl font-semibold">{action.key}</p>
-                          <p className="text-xs text-slate-200">{busy ? "Enviando..." : "Pulsar para fichar"}</p>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center shadow-2xl backdrop-blur">
-                    <div className="w-24 h-24 border-4 border-brand-primary rounded-full mx-auto animate-ping mb-4"></div>
-                    <p className="text-xl font-semibold text-white">Buscando rostros...</p>
-                    <p className="text-sm text-slate-200">Alinea tu cara en la cámara. Distancia segura.</p>
-                    <p className="text-xs text-slate-300 mt-2">{status}</p>
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
         );
       }
