@@ -22,7 +22,7 @@
     </script>
     <script>
       // Token de kiosco inyectado desde el entorno del servidor (.env -> KIOSK_TOKEN)
-      window.KIOSK_TOKEN = "<?php echo htmlspecialchars(getenv('KIOSK_TOKEN') ?: 'changeme', ENT_QUOTES, 'UTF-8'); ?>";
+      window.KIOSK_TOKEN = "<?php echo htmlspecialchars(getenv('KIOSK_TOKEN') ?: '', ENT_QUOTES, 'UTF-8'); ?>";
     </script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -1155,6 +1155,18 @@
         );
 
         if (isKioskMode) {
+          if (!KIOSK_TOKEN) {
+            return (
+              <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white px-6">
+                <div className="max-w-xl text-center space-y-4">
+                  <h1 className="text-2xl font-bold">Kiosco deshabilitado</h1>
+                  <p className="text-sm text-slate-200">
+                    Falta configurar KIOSK_TOKEN en el servidor (.env). Define KIOSK_TOKEN y recarga.
+                  </p>
+                </div>
+              </div>
+            );
+          }
           return <KioskFaceApp />;
         }
 

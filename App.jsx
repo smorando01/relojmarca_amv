@@ -10,7 +10,7 @@ const ACTIONS = [
 
 // Usamos ruta relativa para respetar instalaciones en subdirectorios (ej: /cloudamv/)
 const MODELS_URL = "models";
-const KIOSK_TOKEN = typeof window !== "undefined" && window.KIOSK_TOKEN ? window.KIOSK_TOKEN : "changeme";
+const KIOSK_TOKEN = typeof window !== "undefined" && window.KIOSK_TOKEN ? window.KIOSK_TOKEN : "";
 let faceModelsPromise = null;
 async function ensureFaceModelsLoaded() {
   if (typeof faceapi === "undefined") {
@@ -1117,6 +1117,18 @@ export default function App() {
   );
 
   if (isKioskMode) {
+    if (!KIOSK_TOKEN) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white px-6">
+          <div className="max-w-xl text-center space-y-4">
+            <h1 className="text-2xl font-bold">Kiosco deshabilitado</h1>
+            <p className="text-sm text-slate-200">
+              Falta configurar KIOSK_TOKEN en el servidor (.env). Define KIOSK_TOKEN y recarga.
+            </p>
+          </div>
+        </div>
+      );
+    }
     return <KioskFaceApp />;
   }
 

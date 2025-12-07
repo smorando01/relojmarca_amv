@@ -43,7 +43,8 @@ $dbHost = getenv('DB_HOST') ?: 'localhost';
 $dbName = getenv('DB_NAME') ?: 'amvstore_cloudamv';
 $dbUser = getenv('DB_USER') ?: 'amvstore_cloudamv';
 $dbPass = getenv('DB_PASS') ?: 'u!d=wa@487is3IlY';
-$kioskToken = getenv('KIOSK_TOKEN') ?: 'changeme';
+// El token de kiosco debe venir de .env; vacío significa kiosco deshabilitado.
+$kioskToken = getenv('KIOSK_TOKEN') ?: '';
 
 $validTypes = ['Entrada', 'Salida Descanso', 'Vuelta Descanso', 'Salida'];
 
@@ -583,7 +584,7 @@ function validatePunch(PDO $pdo, $empleadoId, $tipo)
 function validateKioskToken($provided, $expected)
 {
     if ($expected === '') {
-        return true;
+        return false; // kiosco deshabilitado si no hay token configurado
     }
     return hash_equals((string)$expected, (string)$provided);
 }
