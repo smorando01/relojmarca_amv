@@ -768,6 +768,9 @@ function KioskFaceApp() {
       labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptorArray]));
       map[String(emp.id)] = emp;
     });
+    if (labeled.length === 0) {
+      throw new Error("No hay rostros registrados. Guarda al menos un rostro desde el panel admin.");
+    }
     matcherRef.current = new faceapi.FaceMatcher(labeled, 0.6);
     employeeMapRef.current = map;
   }
