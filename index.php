@@ -779,6 +779,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         const employeeMapRef = useRef({});
         const detectingRef = useRef(false);
         const rafRef = useRef(null);
+        const canvasRef = useRef(null);
 
         const [status, setStatus] = useState("Cargando cerebro IA...");
         const [error, setError] = useState("");
@@ -786,6 +787,9 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         const [busy, setBusy] = useState(false);
         const [lastAction, setLastAction] = useState("");
         const [ready, setReady] = useState(false);
+        const [modelsReady, setModelsReady] = useState(false);
+        const [employeesReady, setEmployeesReady] = useState(false);
+        const [cameraReady, setCameraReady] = useState(false);
 
         useEffect(() => {
           let canceled = false;
@@ -793,6 +797,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             try {
               setStatus("Cargando modelos...");
               await ensureFaceModelsLoaded();
+              setModelsReady(true);
               if (canceled) return;
 
               setStatus("Descargando rostros...");
@@ -801,8 +806,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
 
               await startCamera();
               setStatus("Buscando rostros...");
-              setReady(true);
-              detectLoop();
             } catch (e) {
               setError("No se pudo iniciar el modo kiosco: " + e.message);
             }
@@ -827,6 +830,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             videoRef.current.srcObject = stream;
             await videoRef.current.play();
           }
+          setCameraReady(true);
         }
 
         async function loadEmployees() {
@@ -845,6 +849,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
           });
           matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
           employeeMapRef.current = map;
+          setEmployeesReady(true);
         }
 
         function detectLoop() {
@@ -875,8 +880,24 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!detection) {
               setStatus("Acércate a la cámara");
               setMatch(null);
+              const canvas = canvasRef.current;
+              if (canvas) {
+                const ctx = canvas.getContext("2d");
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+              }
               detectingRef.current = false;
               return;
+            }
+
+            const canvas = canvasRef.current;
+            if (canvas && videoEl.videoWidth && videoEl.videoHeight) {
+              canvas.width = videoEl.videoWidth;
+              canvas.height = videoEl.videoHeight;
+              const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
+              const resized = faceapi.resizeResults(detection, displaySize);
+              const ctx = canvas.getContext("2d");
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              faceapi.draw.drawDetections(canvas, resized);
             }
 
             if (!matcherRef.current) {
@@ -912,6 +933,13 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
           }
         }
 
+        useEffect(() => {
+          if (modelsReady && employeesReady && cameraReady && !ready) {
+            setReady(true);
+            detectLoop();
+          }
+        }, [modelsReady, employeesReady, cameraReady, ready]);
+
         async function handlePunch(tipo) {
           if (!match || busy) return;
           setBusy(true);
@@ -942,14 +970,17 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
 
         return (
           <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
-            <video
-              ref={videoRef}
-              className="absolute inset-0 h-full w-full object-cover opacity-40"
-              autoPlay
-              muted
-              playsInline
-              style={{ transform: "scaleX(-1)" }}
-            />
+            <div className="absolute inset-0">
+              <video
+                ref={videoRef}
+                className="h-full w-full object-cover opacity-40"
+                autoPlay
+                muted
+                playsInline
+                style={{ transform: "scaleX(-1)" }}
+              />
+              <canvas ref={canvasRef} className="absolute inset-0 h-full w-full pointer-events-none" />
+            </div>
             <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
               <header className="flex items-center justify-between">
                 <div>
@@ -988,8 +1019,10 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center shadow-2xl backdrop-blur">
+                    <div className="w-24 h-24 border-4 border-brand-primary rounded-full mx-auto animate-ping mb-4"></div>
                     <p className="text-xl font-semibold text-white">Buscando rostros...</p>
                     <p className="text-sm text-slate-200">Alinea tu cara en la cámara. Distancia segura.</p>
+                    <p className="text-xs text-slate-300 mt-2">{status}</p>
                   </div>
                 )}
               </div>
