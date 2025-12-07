@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API = "api.php";
 const ACTIONS = [
@@ -7,6 +7,22 @@ const ACTIONS = [
   { key: "Vuelta Descanso", tone: "from-brand-accent to-brand-primary" },
   { key: "Salida", tone: "from-brand-primary-dark to-brand-dark" },
 ];
+
+const MODELS_URL = "/models";
+let faceModelsPromise = null;
+async function ensureFaceModelsLoaded() {
+  if (typeof faceapi === "undefined") {
+    throw new Error("face-api.js no disponible");
+  }
+  if (!faceModelsPromise) {
+    faceModelsPromise = Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(MODELS_URL),
+      faceapi.nets.faceLandmark68Net.loadFromUri(MODELS_URL),
+      faceapi.nets.faceRecognitionNet.loadFromUri(MODELS_URL),
+    ]);
+  }
+  return faceModelsPromise;
+}
 
 async function apiFetch(method, action, body) {
   const url = action ? `${API}?action=${encodeURIComponent(action)}` : API;
@@ -183,6 +199,118 @@ function EmployeeDashboard({ user, logs, loading, saving, onPunch }) {
   );
 }
 
+function FaceCaptureModal({ employee, onClose, onSaved }) {
+  const videoRef = useRef(null);
+  const loopRef = useRef(null);
+  const streamRef = useRef(null);
+  const [status, setStatus] = useState("Preparando cámara...");
+  const [descriptor, setDescriptor] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let canceled = false;
+    async function start() {
+      try {
+        setStatus("Cargando modelos...");
+        await ensureFaceModelsLoaded();
+        setStatus("Solicitando cámara...");
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+        if (canceled) return;
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        setStatus("Detectando rostro...");
+        loopRef.current = setInterval(detectFace, 800);
+      } catch (e) {
+        setError("No se pudo iniciar cámara o modelos");
+      }
+    }
+    start();
+    return () => {
+      if (loopRef.current) clearInterval(loopRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  async function detectFace() {
+    if (!videoRef.current || typeof faceapi === "undefined") return;
+    try {
+      const detection = await faceapi
+        .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+      if (detection) {
+        setDescriptor(Array.from(detection.descriptor));
+        setStatus("Rostro detectado. Guarda para registrar.");
+      } else {
+        setStatus("Acerca tu rostro a la cámara...");
+      }
+    } catch (e) {
+      setError("Error detectando rostro");
+    }
+  }
+
+  async function handleSave() {
+    if (!descriptor) return;
+    setSaving(true);
+    const res = await apiFetch("POST", "save_face", { empleado_id: employee.id, descriptor });
+    if (res && res.success) {
+      onSaved();
+    } else {
+      setError(res.error || "No se pudo guardar");
+    }
+    setSaving(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+      <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-xl font-semibold">Registrar rostro para {employee.nombre}</h3>
+            <p className="text-sm text-slate-600">Usa la cámara frontal y espera la detección.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-800">✕</button>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
+            <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+          </div>
+          <div className="space-y-3 text-sm">
+            <p className="font-semibold text-brand-dark">Estado: {status}</p>
+            {descriptor && (
+              <p className="rounded-lg bg-green-50 px-3 py-2 text-green-800">Rostro listo para guardar.</p>
+            )}
+            {error && <p className="rounded-lg bg-brand-alert/10 px-3 py-2 text-brand-alert">{error}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDescriptor(null)}
+                className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+              >
+                Reintentar
+              </button>
+              <button
+                type="button"
+                disabled={!descriptor || saving}
+                onClick={handleSave}
+                className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white shadow hover:bg-brand-primary-dark disabled:opacity-60"
+              >
+                {saving ? "Guardando..." : "Guardar rostro"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminDashboard({
   user,
   logs,
@@ -195,6 +323,7 @@ function AdminDashboard({
   onManualPunch,
   onEditPunch,
   onDeletePunch,
+  onFaceSaved,
 }) {
   const initialEmployee = { nombre: "", cedula: "", password: "", rol: "empleado" };
   const initialManual = { empleado_id: "", tipo: "Entrada", fecha_hora: "" };
@@ -205,11 +334,17 @@ function AdminDashboard({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [faceModalEmployee, setFaceModalEmployee] = useState(null);
 
   const employeeOptions = useMemo(() => {
     if (!stats || !stats.empleados) return [];
     return stats.empleados;
   }, [stats]);
+
+  const selectedEmployee = useMemo(
+    () => employeeOptions.find((emp) => emp.id === selectedEmployeeId) || null,
+    [employeeOptions, selectedEmployeeId]
+  );
 
   useEffect(() => {
     onReloadStats();
@@ -413,19 +548,31 @@ function AdminDashboard({
 
       {stats && stats.empleados && (
         <div className="rounded-2xl border border-white/80 bg-white/95 p-6 shadow-xl backdrop-blur">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold">Empleados</h2>
-            <select
-              className="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-primary focus:outline-none"
-              value={selectedEmployeeId || ""}
-              onChange={(e) => setSelectedEmployeeId(Number(e.target.value))}
-            >
-              {employeeOptions.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.nombre} ({emp.rol})
-                </option>
-              ))}
-            </select>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-semibold">Empleados</h2>
+              <select
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-primary focus:outline-none"
+                value={selectedEmployeeId || ""}
+                onChange={(e) => setSelectedEmployeeId(Number(e.target.value))}
+              >
+                {employeeOptions.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.nombre} ({emp.rol})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={!selectedEmployee}
+                onClick={() => selectedEmployee && setFaceModalEmployee(selectedEmployee)}
+                className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300 disabled:opacity-60"
+              >
+                Registrar rostro
+              </button>
+            </div>
           </div>
           <div className="overflow-hidden rounded-xl border border-slate-200">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -537,6 +684,196 @@ function AdminDashboard({
           </form>
         </div>
       )}
+
+      {faceModalEmployee && (
+        <FaceCaptureModal
+          employee={faceModalEmployee}
+          onClose={() => setFaceModalEmployee(null)}
+          onSaved={() => {
+            setFaceModalEmployee(null);
+            onFaceSaved();
+            onReloadStats();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function KioskFaceApp() {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const loopRef = useRef(null);
+  const matcherRef = useRef(null);
+  const employeeMapRef = useRef({});
+
+  const [status, setStatus] = useState("Cargando cerebro IA...");
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState("");
+  const [match, setMatch] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [lastAction, setLastAction] = useState("");
+
+  useEffect(() => {
+    let canceled = false;
+    async function start() {
+      try {
+        setStatus("Cargando modelos...");
+        await ensureFaceModelsLoaded();
+        if (canceled) return;
+        setStatus("Descargando rostros...");
+        await loadEmployees();
+        if (canceled) return;
+        await startCamera();
+        setStatus("Buscando rostros...");
+        setReady(true);
+        loopRef.current = setInterval(runDetection, 800);
+      } catch (e) {
+        setError("No se pudo iniciar el modo kiosco: " + e.message);
+      }
+    }
+    start();
+    return () => {
+      if (loopRef.current) clearInterval(loopRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
+  async function startCamera() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+      audio: false,
+    });
+    streamRef.current = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+    }
+  }
+
+  async function loadEmployees() {
+    const res = await apiFetch("GET", "get_kiosk_data");
+    if (!res || !res.success) {
+      throw new Error(res?.error || "No se pudieron obtener descriptores");
+    }
+    const labeled = [];
+    const map = {};
+    (res.empleados || []).forEach((emp) => {
+      if (!emp.face_descriptor || !Array.isArray(emp.face_descriptor)) return;
+      const descriptorArray = new Float32Array(emp.face_descriptor);
+      labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptorArray]));
+      map[String(emp.id)] = emp;
+    });
+    matcherRef.current = new faceapi.FaceMatcher(labeled, 0.6);
+    employeeMapRef.current = map;
+  }
+
+  async function runDetection() {
+    if (!ready || busy || !videoRef.current || !matcherRef.current) return;
+    try {
+      const detection = await faceapi
+        .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (!detection) {
+        setStatus("Acércate a la cámara");
+        setMatch(null);
+        return;
+      }
+
+      const best = matcherRef.current.findBestMatch(detection.descriptor);
+      if (!best || best.label === "unknown" || best.distance > 0.45) {
+        setStatus("Rostro desconocido");
+        setMatch(null);
+        return;
+      }
+
+      const employee = employeeMapRef.current[best.label];
+      if (!employee) {
+        setStatus("Rostro desconocido");
+        setMatch(null);
+        return;
+      }
+
+      setStatus(`Hola, ${employee.nombre}`);
+      setMatch({ employee, distance: best.distance });
+    } catch (e) {
+      setError("Error procesando rostro");
+    }
+  }
+
+  async function handlePunch(tipo) {
+    if (!match || busy) return;
+    setBusy(true);
+    setStatus("Registrando fichaje...");
+    const res = await apiFetch("POST", "kiosk_punch", {
+      empleado_id: match.employee.id,
+      tipo,
+    });
+    if (res && res.success) {
+      setLastAction(`${match.employee.nombre} → ${tipo}`);
+      setStatus("Fichaje registrado");
+      setTimeout(() => {
+        setBusy(false);
+        setMatch(null);
+        setStatus("Buscando rostros...");
+      }, 3000);
+    } else {
+      setStatus(res.error || "No se pudo fichar");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="relative min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
+      <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover opacity-40" autoPlay muted playsInline />
+      <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-6 py-10">
+        <header className="flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.25em] text-slate-300">CloudAMV / Modo Kiosco</p>
+            <h1 className="text-3xl font-bold">Fichaje con rostro</h1>
+            <p className="text-sm text-slate-200">Acércate a la cámara para identificarte.</p>
+          </div>
+          <div className="text-right text-sm text-slate-300">
+            <p>{status}</p>
+            {lastAction && <p className="text-emerald-300 font-semibold">Último: {lastAction}</p>}
+          </div>
+        </header>
+
+        {error && <div className="rounded-xl bg-brand-alert/20 px-4 py-3 text-brand-alert">{error}</div>}
+
+        <div className="flex flex-1 flex-col items-center justify-center gap-6">
+          {match ? (
+            <div className="w-full max-w-3xl rounded-2xl border border-white/20 bg-white/10 p-6 shadow-2xl backdrop-blur">
+              <p className="text-sm uppercase tracking-[0.2em] text-slate-200">Rostro reconocido</p>
+              <h2 className="text-3xl font-bold text-white">Hola, {match.employee.nombre}</h2>
+              <p className="text-sm text-slate-200">Selecciona tu acción</p>
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {ACTIONS.map((action) => (
+                  <button
+                    key={action.key}
+                    onClick={() => handlePunch(action.key)}
+                    disabled={busy}
+                    className="rounded-2xl bg-white/20 px-4 py-6 text-left text-white shadow-lg transition hover:bg-white/30 disabled:opacity-60"
+                  >
+                    <p className="text-xs uppercase tracking-[0.15em] text-slate-200">Acción</p>
+                    <p className="text-xl font-semibold">{action.key}</p>
+                    <p className="text-xs text-slate-200">{busy ? "Enviando..." : "Pulsar para fichar"}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-10 text-center shadow-2xl backdrop-blur">
+              <p className="text-xl font-semibold text-white">Buscando rostros...</p>
+              <p className="text-sm text-slate-200">Alinea tu cara en la cámara. Distancia segura.</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -550,6 +887,11 @@ export default function App() {
   const [message, setMessage] = useState("");
 
   const isAdmin = user && user.rol === "admin";
+  const isKioskMode = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get("mode") === "kiosk";
+  }, []);
 
   const checkSession = useCallback(async () => {
     const res = await apiFetch("GET", "session");
@@ -592,10 +934,12 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
+    if (isKioskMode) return;
     checkSession();
-  }, [checkSession]);
+  }, [checkSession, isKioskMode]);
 
   useEffect(() => {
+    if (isKioskMode) return;
     if (!user) {
       setLogs([]);
       setStats(null);
@@ -605,7 +949,7 @@ export default function App() {
     if (user.rol === "admin") {
       loadStats();
     }
-  }, [user, loadLogs, loadStats]);
+  }, [user, loadLogs, loadStats, isKioskMode]);
 
   async function handleLogin(cedula, password) {
     setSaving(true);
@@ -742,6 +1086,10 @@ export default function App() {
     [loadLogs, loadStats, user]
   );
 
+  if (isKioskMode) {
+    return <KioskFaceApp />;
+  }
+
   if (!user) {
     return <LoginView onLogin={handleLogin} saving={saving} message={message} />;
   }
@@ -783,6 +1131,7 @@ export default function App() {
           onManualPunch={handleManualPunch}
           onEditPunch={handleEditPunch}
           onDeletePunch={handleDeletePunch}
+          onFaceSaved={() => setMessage("Rostro registrado correctamente")}
         />
       ) : (
         <EmployeeDashboard user={user} logs={logs} loading={loading} saving={saving} onPunch={handlePunch} />

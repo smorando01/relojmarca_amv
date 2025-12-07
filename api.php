@@ -226,6 +226,61 @@ if ($method === 'POST') {
             respond(['success' => true]);
             break;
 
+        case 'save_face':
+            // Guarda descriptor facial para un empleado (admin)
+            requireLogin('admin');
+            $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
+            $descriptor = isset($input['descriptor']) ? $input['descriptor'] : null;
+
+            $parsedDescriptor = parseDescriptor($descriptor);
+            if (!$empleadoId || $parsedDescriptor === null) {
+                respond(['success' => false, 'error' => 'Empleado y descriptor válidos son requeridos'], 400);
+            }
+
+            $stmt = $pdo->prepare('UPDATE empleados SET face_descriptor = :descriptor WHERE id = :id');
+            $stmt->execute([
+                ':descriptor' => json_encode($parsedDescriptor),
+                ':id' => $empleadoId,
+            ]);
+
+            respond(['success' => true]);
+            break;
+
+        case 'kiosk_punch':
+            // Fichaje simplificado para kiosco por reconocimiento facial
+            $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
+            $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+
+            if (!$empleadoId || $tipo === '') {
+                respond(['success' => false, 'error' => 'Empleado y tipo son requeridos'], 400);
+            }
+
+            $error = validatePunch($pdo, $empleadoId, $tipo);
+            if ($error) {
+                respond(['success' => false, 'error' => $error], 400);
+            }
+
+            try {
+                $stmt = $pdo->prepare(
+                    'INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)'
+                );
+                $stmt->execute([
+                    ':empleado_id' => $empleadoId,
+                    ':tipo' => $tipo,
+                    ':fecha_hora' => date('Y-m-d H:i:s'),
+                ]);
+
+                respond([
+                    'success' => true,
+                    'id' => (int)$pdo->lastInsertId(),
+                    'empleado_id' => $empleadoId,
+                    'tipo' => $tipo,
+                ]);
+            } catch (Throwable $e) {
+                respond(['success' => false, 'error' => 'No se pudo guardar el fichaje: ' . $e->getMessage()], 500);
+            }
+            break;
+
         default:
             // Fichaje de empleado autenticado con validaciones de negocio
             $user = requireLogin();
@@ -301,6 +356,22 @@ if ($method === 'GET') {
                     'empleados' => $empleados,
                 ],
             ]);
+            break;
+
+        case 'get_kiosk_data':
+            // Datos de empleados con descriptor facial para kiosco
+            $rows = $pdo->query('SELECT id, nombre, cedula, rol, face_descriptor FROM empleados WHERE face_descriptor IS NOT NULL')->fetchAll();
+            $empleados = [];
+            foreach ($rows as $row) {
+                $empleados[] = [
+                    'id' => (int)$row['id'],
+                    'nombre' => $row['nombre'],
+                    'cedula' => $row['cedula'],
+                    'rol' => $row['rol'],
+                    'face_descriptor' => decodeDescriptor($row['face_descriptor']),
+                ];
+            }
+            respond(['success' => true, 'empleados' => $empleados]);
             break;
 
         case 'export_csv':
@@ -485,6 +556,39 @@ function validatePunch(PDO $pdo, $empleadoId, $tipo)
     }
 
     return null;
+}
+
+function parseDescriptor($input)
+{
+    if (!is_array($input)) {
+        return null;
+    }
+
+    $clean = [];
+    foreach ($input as $value) {
+        if (!is_numeric($value)) {
+            return null;
+        }
+        $clean[] = (float)$value;
+    }
+
+    if (count($clean) !== 128) {
+        return null;
+    }
+
+    return $clean;
+}
+
+function decodeDescriptor($raw)
+{
+    if ($raw === null) {
+        return null;
+    }
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return null;
+    }
+    return array_map('floatval', $decoded);
 }
 
 function fetchLogs(PDO $pdo, array $filters)

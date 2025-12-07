@@ -9,6 +9,7 @@ CREATE TABLE empleados (
   nombre VARCHAR(150) NOT NULL,
   cedula VARCHAR(150) NOT NULL,
   password VARCHAR(255) NOT NULL,
+  face_descriptor JSON NULL,
   rol ENUM('admin', 'empleado') NOT NULL DEFAULT 'empleado',
   turno_id INT NOT NULL DEFAULT 1,
   UNIQUE KEY uq_cedula (cedula)
