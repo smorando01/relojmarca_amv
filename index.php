@@ -20,6 +20,10 @@
         },
       };
     </script>
+    <script>
+      // Token de kiosco inyectado desde el entorno del servidor (.env -> KIOSK_TOKEN)
+      window.KIOSK_TOKEN = "<?php echo htmlspecialchars(getenv('KIOSK_TOKEN') ?: 'changeme', ENT_QUOTES, 'UTF-8'); ?>";
+    </script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
