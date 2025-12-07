@@ -1,3 +1,28 @@
+<?php
+// Carga de variables de entorno para exponer KIOSK_TOKEN al frontend
+function loadEnv($path)
+{
+    if (!is_readable($path)) {
+        return;
+    }
+    $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#' || $line[0] === ';' || strpos($line, '=') === false) {
+            continue;
+        }
+        [$key, $value] = explode('=', $line, 2);
+        $key = trim($key);
+        $value = trim($value);
+        if ($value !== '' && (($value[0] === '"' && substr($value, -1) === '"') || ($value[0] === "'" && substr($value, -1) === "'"))) {
+            $value = substr($value, 1, -1);
+        }
+        putenv($key . '=' . $value);
+    }
+}
+loadEnv(__DIR__ . '/.env');
+$kioskToken = getenv('KIOSK_TOKEN') ?: '';
+?>
 <!doctype html>
 <html lang="es">
   <head>
@@ -21,8 +46,8 @@
       };
     </script>
     <script>
-      // Token de kiosco inyectado desde el entorno del servidor (.env -> KIOSK_TOKEN)
-      window.KIOSK_TOKEN = "<?php echo htmlspecialchars(getenv('KIOSK_TOKEN') ?: '', ENT_QUOTES, 'UTF-8'); ?>";
+      // Token de kiosco inyectado desde .env (servidor)
+      window.KIOSK_TOKEN = "<?php echo htmlspecialchars($kioskToken, ENT_QUOTES, 'UTF-8'); ?>";
     </script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
