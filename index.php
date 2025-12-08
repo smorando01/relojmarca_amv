@@ -395,6 +395,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         const employeeMapRef = useRef({});
         const rafRef = useRef(null);
         const detectingRef = useRef(false);
+        const lastLabelRef = useRef({ label: null, count: 0, distance: null });
 
         const [status, setStatus] = useState("Cargando cerebro IA...");
         const [error, setError] = useState("");
@@ -464,7 +465,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptor]));
             map[String(emp.id)] = emp;
           });
-          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.7) : null;
+          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
           employeeMapRef.current = map;
           setEmployeesReady(true);
         }
@@ -521,20 +522,29 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
               const best = matcherRef.current.findBestMatch(detection.descriptor);
               const distance = best && best.distance !== undefined ? best.distance : null;
               setLastDistance(distance);
-              const THRESHOLD = 0.7;
+              const THRESHOLD = 0.6;
               if (!best || best.label === "unknown" || (distance !== null && distance > THRESHOLD)) {
                 const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
                 setStatus(diffText);
                 setMatch(null);
+                lastLabelRef.current = { label: null, count: 0, distance: null };
               } else {
                 const employee = employeeMapRef.current[best.label];
                 if (employee) {
-                  setStatus(`Hola, ${employee.nombre}`);
-                  setMatch({ employee, distance });
+                  const stable = lastLabelRef.current.label === best.label ? lastLabelRef.current.count + 1 : 1;
+                  lastLabelRef.current = { label: best.label, count: stable, distance };
+                  if (stable >= 2) {
+                    setStatus(`Hola, ${employee.nombre}`);
+                    setMatch({ employee, distance });
+                  } else {
+                    setStatus(`Verificando... Diff: ${distance !== null ? distance.toFixed(2) : "N/D"}`);
+                    setMatch(null);
+                  }
                 } else {
                   const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
                   setStatus(diffText);
                   setMatch(null);
+                  lastLabelRef.current = { label: null, count: 0, distance: null };
                 }
               }
             }
